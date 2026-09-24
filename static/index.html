@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>离心机转子配平规划器</title>
+<style>
+:root{
+  --bg:#0f1420; --panel:#171e2e; --panel2:#1d2740; --line:#2a3650;
+  --txt:#e6ecf7; --mut:#94a3c0; --acc:#4f9dff; --acc2:#36d399;
+  --warn:#fbbd23; --bad:#f87272; --lock:#c084fc; --slot:#283450;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Segoe UI",system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  background:var(--bg);color:var(--txt);font-size:14px}
+header{display:flex;align-items:center;gap:14px;padding:12px 18px;background:linear-gradient(90deg,#14203a,#0f1420);
+  border-bottom:1px solid var(--line);flex-wrap:wrap}
+header h1{font-size:18px;margin:0;font-weight:600}
+header .sub{color:var(--mut);font-size:12px}
+.spacer{flex:1}
+button{background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:7px;
+  padding:7px 13px;cursor:pointer;font-size:13px;transition:.15s}
+button:hover{border-color:var(--acc);color:#fff}
+button.primary{background:var(--acc);border-color:var(--acc);color:#081325;font-weight:600}
+button.primary:hover{filter:brightness(1.1)}
+button.ghost{background:transparent}
+button:disabled{opacity:.4;cursor:not-allowed}
+.wrap{display:grid;grid-template-columns:380px 1fr;gap:14px;padding:14px;align-items:start}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+.panel h2{font-size:14px;margin:0 0 10px;display:flex;align-items:center;gap:8px}
+.panel h2 .tag{font-size:11px;color:var(--mut);font-weight:400}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+label{display:block;font-size:12px;color:var(--mut);margin-bottom:3px}
+input,select{width:100%;background:var(--bg);border:1px solid var(--line);color:var(--txt);
+  border-radius:6px;padding:6px 8px;font-size:13px}
+input:focus,select:focus{outline:none;border-color:var(--acc)}
+.section{margin-top:14px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:left;padding:5px 6px;border-bottom:1px solid var(--line)}
+th{color:var(--mut);font-weight:500}
+.tube-row input[type=number]{padding:4px 6px}
+.iconbtn{padding:3px 8px;font-size:12px;border-radius:5px}
+.chk{display:flex;align-items:center;gap:6px;color:var(--txt)}
+.chk input{width:auto}
+.result{display:grid;grid-template-columns:minmax(320px,420px) 1fr;gap:16px;align-items:start}
+.metrics{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.metric{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
+.metric .k{font-size:11.5px;color:var(--mut)}
+.metric .v{font-size:17px;font-weight:600;margin-top:2px}
+.metric .u{font-size:11px;color:var(--mut);font-weight:400}
+.grade{display:inline-block;width:22px;height:22px;line-height:22px;text-align:center;border-radius:50%;
+  font-weight:700;margin-left:6px}
+.gA{background:#14532d;color:#bbf7d0}.gB{background:#1e40af;color:#bfdbfe}
+.gC{background:#78350f;color:#fde68a}.gD{background:#7f1d1d;color:#fecaca}
+.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;border:1px solid var(--line)}
+.pill.lock{color:var(--lock);border-color:var(--lock)}
+.pill.move{color:var(--warn);border-color:var(--warn)}
+.pill.mutex{color:#fda4af;border-color:var(--bad)}
+#rotor{width:100%;max-width:420px;display:block;margin:0 auto;background:radial-gradient(circle at 50% 45%,#1a2540,#101726);
+  border-radius:12px;border:1px solid var(--line)}
+.slot-node{cursor:pointer}
+.slot-node circle.ring{fill:var(--slot);stroke:#3b4a6e;stroke-width:1.5}
+.slot-node.disabled circle.ring{fill:#141a28;stroke:#2a3346;stroke-dasharray:3 3}
+.slot-node.hover circle.ring{stroke:var(--acc)}
+.slot-node text{font-size:10px;fill:var(--mut);text-anchor:middle;pointer-events:none}
+.slot-node .tube-label{font-size:11px;font-weight:700;fill:#fff}
+.slot-node.locked circle.ring{stroke:var(--lock)}
+.slot-node.moved circle.ring{stroke:var(--warn);stroke-width:2.5}
+.vec{stroke-width:2.4;fill:none}
+.vec1{stroke:var(--acc)}.vec2{stroke:var(--acc2)}
+.hub{fill:#0c1322;stroke:#3b4a6e}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin-top:6px;justify-content:center}
+.legend i{width:10px;height:10px;border-radius:2px;display:inline-block;margin-right:4px;vertical-align:middle}
+.reason{background:var(--panel2);border-left:3px solid var(--acc);border-radius:0 7px 7px 0;
+  padding:8px 10px;margin:7px 0;font-size:12.5px;line-height:1.55}
+.reason.single{border-left-color:var(--warn)}
+.reason .rhead{color:var(--acc);font-weight:600;font-size:11.5px;margin-bottom:2px}
+.reason.single .rhead{color:var(--warn)}
+.tabs{display:flex;gap:4px;margin-bottom:8px}
+.tabs button{padding:5px 12px;font-size:12.5px}
+.tabs button.active{background:var(--acc);color:#081325;border-color:var(--acc)}
+.replaybar{display:flex;align-items:center;gap:8px;margin:8px 0;flex-wrap:wrap}
+.replaybar input[type=range]{flex:1;min-width:120px}
+.steptext{font-size:12.5px;color:var(--mut);min-height:34px;line-height:1.5}
+.badge{font-size:11px;padding:1px 7px;border-radius:5px;background:var(--panel2);border:1px solid var(--line)}
+.muted{color:var(--mut);font-size:12px}
+.rowline{display:flex;gap:8px;align-items:center}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1f2b47;border:1px solid var(--acc);
+  padding:10px 18px;border-radius:8px;opacity:0;transition:.3s;pointer-events:none;z-index:50;max-width:80%}
+.toast.show{opacity:1}
+.toast.err{border-color:var(--bad)}
+.dialog{position:fixed;inset:0;background:rgba(5,9,18,.7);display:none;align-items:center;justify-content:center;z-index:40}
+.dialog.open{display:flex}
+.dialog .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;width:min(560px,92vw);
+  max-height:84vh;overflow:auto}
+.history-item{display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid var(--line);gap:8px}
+.history-item:hover{background:var(--panel2)}
+.history-item.selected{background:var(--panel2);box-shadow:inset 3px 0 0 var(--acc)}
+.history-item input[type=checkbox]{width:auto;margin-right:4px}
+.small{font-size:11.5px;color:var(--mut)}
+.dialog .box.wide{width:min(960px,95vw)}
+.cmp-warn{background:#3a2a12;border:1px solid var(--warn);color:#fde68a;border-radius:8px;
+  padding:9px 12px;font-size:12.5px;line-height:1.5;margin:8px 0}
+.cmp-ok{background:#10331f;border:1px solid var(--acc2);color:#bbf7d0;border-radius:8px;
+  padding:9px 12px;font-size:12.5px;margin:8px 0}
+.wc-ok{background:#10331f;border:1px solid var(--acc2);color:#bbf7d0;border-radius:9px;
+  padding:11px 14px;font-size:13.5px;line-height:1.6;margin:10px 0}
+.wc-bad{background:#3d1414;border:1px solid var(--bad);color:#fecaca;border-radius:9px;
+  padding:11px 14px;font-size:13.5px;line-height:1.6;margin:10px 0}
+.wc-note{background:var(--panel2);border:1px dashed var(--line);border-radius:8px;
+  padding:8px 11px;font-size:12px;color:var(--mut);line-height:1.55;margin:8px 0}
+.wc-table td:nth-child(n+4){text-align:right}
+.wc-hi{color:var(--warn);font-weight:600}
+.wc-pos{color:var(--bad)} .wc-neg{color:var(--acc2)}
+.dialog .box.wider{width:min(860px,95vw)}
+.cmp-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cmp-col h3{font-size:13px;margin:0 0 6px;color:var(--acc)}
+.cmp-col h3.b{color:var(--acc2)}
+.cmp-table td:nth-child(2),.cmp-table td:nth-child(3),.cmp-table td:nth-child(4){text-align:right}
+.delta-up{color:var(--bad);font-weight:600}
+.delta-down{color:var(--acc2);font-weight:600}
+.delta-flat{color:var(--mut)}
+.status-tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;border:1px solid var(--line);white-space:nowrap}
+.st-added{color:var(--acc2);border-color:var(--acc2)}
+.st-removed{color:var(--bad);border-color:var(--bad)}
+.st-moved{color:var(--warn);border-color:var(--warn)}
+.st-unchanged{color:var(--mut)}
+.diff-group-title{font-size:12.5px;color:var(--warn);margin:10px 0 2px;font-weight:600}
+@media(max-width:1080px){.wrap{grid-template-columns:1fr}.result{grid-template-columns:1fr}.cmp-grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>离心机转子配平规划器
+      <span class="badge">FastAPI · SQLite</span>
+    </h1>
+    <div class="sub">在质量与角度约束下搜索近似最优对称布局 · 合力矩 / 二阶不平衡量 · 锁定增量重排 · 步骤回放 · JSON 导出</div>
+  </div>
+  <div class="spacer"></div>
+  <button id="btnSample">载入示例</button>
+  <button id="btnHistory">历史方案</button>
+  <button id="btnPlan" class="primary">计算配平方案</button>
+</header>
+
+<div class="wrap">
+  <!-- 左:输入 -->
+  <div>
+    <div class="panel">
+      <h2>转子参数</h2>
+      <div class="grid3">
+        <div><label>槽位数</label><input id="slotCount" type="number" min="2" max="128" value="12"></div>
+        <div><label>半径 R (mm)</label><input id="radius" type="number" min="1" value="100"></div>
+        <div><label>转速 (rpm)</label><input id="rpm" type="number" min="0" value="4000"></div>
+      </div>
+      <div class="grid2" style="margin-top:8px">
+        <div><label>均布角度生成</label>
+          <div class="rowline"><button id="btnGenSlots" class="iconbtn">按槽位数生成均布角度</button></div>
+        </div>
+        <div><label>方案名称</label><input id="planName" value="转子配平方案"></div>
+      </div>
+      <div class="section">
+        <h2>槽位角度 / 禁用 <span class="tag">点击转子或切换复选框禁用槽位</span></h2>
+        <div id="slotEditor" style="max-height:150px;overflow:auto"></div>
+      </div>
+    </div>
+
+    <div class="panel section">
+      <h2>试管清单 <span class="tag">质量单位 g;锁定试管需指定固定槽位</span></h2>
+      <table id="tubeTable">
+        <thead><tr><th style="width:44px">编号</th><th style="width:80px">质量(g)</th>
+          <th style="width:54px">锁定</th><th style="width:80px">固定槽</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="rowline" style="margin-top:8px">
+        <button id="btnAddTube">+ 添加试管</button>
+        <span class="small" id="tubeCount"></span>
+      </div>
+    </div>
+
+    <div class="panel section">
+      <h2>互斥试管隔离 <span class="tag">至多 12 对; 含互斥对时限 7 管 / 10 启用槽, 精确搜索</span></h2>
+      <table id="mutexTable">
+        <thead><tr><th style="width:110px">试管 A</th><th></th><th style="width:110px">试管 B</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="rowline" style="margin-top:8px">
+        <button id="btnAddMutex">+ 添加互斥对</button>
+        <span class="small" id="mutexCount"></span>
+      </div>
+      <div class="small" style="margin-top:6px;line-height:1.55">
+        每对试管不得落在<b>按角度环形排序后相邻的物理槽位</b>(禁用槽仍占据相邻关系:
+        两个启用槽之间隔着禁用槽时不算相邻)。含互斥对时后端对全部合法摆放做<b>精确完全枚举</b>,
+        取现有评分(w₁·|U₁|² + w₂·|U₂|², 增量重排含移动罚权)最小值; 锁定管互斥冲突或无合法摆放时
+        明确返回<b>不可行且不保存方案</b>。不填互斥对时沿用原有启发式求解。
+      </div>
+    </div>
+
+    <div class="panel section">
+      <h2>求解 / 增量重排</h2>
+      <div class="grid3">
+        <div><label>一阶权重 w₁</label><input id="w1" type="number" step="any" value="1"></div>
+        <div><label>二阶权重 w₂</label><input id="w2" type="number" step="any" value="0.000001"></div>
+        <div><label>移动罚权</label><input id="moveWeight" type="number" step="any" value="0"></div>
+      </div>
+      <div class="grid2" style="margin-top:8px">
+        <div><label>随机起点数</label><input id="restarts" type="number" value="10"></div>
+        <div><label>退火链长度</label><input id="chainSteps" type="number" value="2500"></div>
+      </div>
+      <div class="rowline" style="margin-top:9px">
+        <input type="checkbox" id="incremental" class="chk" style="width:auto">
+        <label for="incremental" style="margin:0">基于当前结果做增量重排(锁定/增删后, 沿用上一方案)</label>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右:结果 -->
+  <div class="panel">
+    <div class="rowline" style="margin-bottom:10px">
+      <h2 style="margin:0">配平结果</h2>
+      <span class="small" id="solveInfo"></span>
+      <div class="spacer" style="flex:1"></div>
+      <button id="btnWeighing" disabled title="对已保存方案做称重误差校核(只读)">称重误差校核</button>
+      <button id="btnCalib" disabled title="对已保存方案做实测振动校准(只读, 影响系数法)">实测振动校准</button>
+      <button id="btnLoading" disabled title="对已保存方案规划逐管安全装载次序(只读, 子集动态规划)">逐管安全装载</button>
+      <button id="btnEvac" disabled title="对已保存方案做失效槽位应急迁移(只读, 精确枚举)">失效槽位应急迁移</button>
+      <button id="btnRecheck" disabled title="对已保存方案做现场装管复核(只读, 一对一匹配)">现场装管复核</button>
+      <button id="btnExport" disabled>导出 JSON</button>
+      <button id="btnCopy" disabled>复制 JSON</button>
+    </div>
+    <div class="result">
+      <div>
+        <svg id="rotor" viewBox="0 0 420 420"></svg>
+        <div class="legend">
+          <span><i style="background:var(--slot)"></i>占用槽</span>
+          <span><i style="background:#141a28;border:1px dashed #2a3346"></i>禁用槽</span>
+          <span><i style="background:var(--lock)"></i>锁定试管</span>
+          <span><i style="background:var(--warn)"></i>本次移动</span>
+          <span><i style="background:var(--acc)"></i>一阶合力 U₁</span>
+          <span><i style="background:var(--acc2)"></i>二阶 U₂</span>
+          <span><i style="background:#6b7794"></i>物理相邻(环)</span>
+          <span><i style="background:#f87272"></i>互斥对连线</span>
+        </div>
+      </div>
+      <div>
+        <div class="metrics" id="metrics">
+          <div class="metric"><div class="k">一阶不平衡量 |U₁|</div><div class="v" id="mU1">–</div></div>
+          <div class="metric"><div class="k">二阶不平衡量 |U₂|</div><div class="v" id="mU2">–</div></div>
+          <div class="metric"><div class="k">离心合力 F</div><div class="v" id="mForce">–</div></div>
+          <div class="metric"><div class="k">合力矩 M</div><div class="v" id="mMoment">–</div></div>
+          <div class="metric"><div class="k">等效偏心距</div><div class="v" id="mEcc">–</div></div>
+          <div class="metric"><div class="k">平衡评级</div><div class="v" id="mGrade">–</div></div>
+        </div>
+        <div id="summary" class="reason" style="margin-top:10px;display:none"></div>
+        <div id="mutexInfo" class="wc-note" style="margin-top:8px;display:none"></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="tabs">
+        <button data-tab="replay" class="active">方案回放</button>
+        <button data-tab="pairs">配对依据</button>
+        <button data-tab="placements">摆放明细</button>
+      </div>
+      <div id="tab-replay">
+        <div class="replaybar">
+          <button id="rpFirst">⏮</button>
+          <button id="rpPrev">◀</button>
+          <button id="rpPlay">▶ 播放</button>
+          <button id="rpNext">▶</button>
+          <button id="rpLast">⏭</button>
+          <input id="rpRange" type="range" min="0" max="0" value="0">
+          <span class="badge" id="rpPos">0/0</span>
+        </div>
+        <div id="stepReason" class="steptext">计算后可在此逐步回放求解过程。</div>
+      </div>
+      <div id="tab-pairs" style="display:none">
+        <div id="pairList"></div>
+      </div>
+      <div id="tab-placements" style="display:none">
+        <table id="placementTable">
+          <thead><tr><th>试管</th><th>质量(g)</th><th>槽位</th><th>角度</th><th>原槽</th><th>互斥</th><th>状态</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="historyDialog" class="dialog">
+  <div class="box">
+    <div class="rowline"><h2 style="margin:0">历史方案</h2><div style="flex:1"></div>
+      <button id="btnCloseHistory" class="ghost">关闭</button></div>
+    <div class="rowline" style="margin:8px 0">
+      <button id="btnCompare" disabled>比较选中的两条方案</button>
+      <button id="btnBatch" disabled>批次换装顺序</button>
+      <span class="small" id="compareHint">勾选 2 条可并排比较; 勾选 2~10 条可规划批次换装顺序。</span>
+    </div>
+    <div id="historyList" style="margin-top:4px"></div>
+  </div>
+</div>
+
+<div id="compareDialog" class="dialog">
+  <div class="box wide">
+    <div class="rowline"><h2 style="margin:0">方案比较</h2><div style="flex:1"></div>
+      <button id="btnCloseCompare" class="ghost">关闭</button></div>
+    <div id="compareBody" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<div id="batchDialog" class="dialog">
+  <div class="box wide">
+    <div class="rowline"><h2 style="margin:0">批次换装顺序</h2><div style="flex:1"></div>
+      <button id="btnCloseBatch" class="ghost">关闭</button></div>
+    <div class="wc-note">以<b>空转子</b>为起点, 精确规划所选方案的执行次序, 使卸下/装入
+      总操作数最少(每卸下或装入一支试管各计 1 次; 同成本按方案 ID 序列升序裁决)。
+      仅接受半径、槽位角度与启用状态完全相同的方案; 同编号试管质量不一致将被拒绝。
+      结果为<b>只读</b>, 不修改任何已保存方案。</div>
+    <div id="batchBody" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<div id="weighingDialog" class="dialog">
+  <div class="box wider">
+    <div class="rowline"><h2 style="margin:0">称重误差校核</h2><div style="flex:1"></div>
+      <button id="btnCloseWeighing" class="ghost">关闭</button></div>
+    <div class="wc-note">固定读取该方案的落槽与角度, 不可修改; 逐管填写非负称重质量误差上界
+      (0 ≤ e<sub>k</sub> ≤ 标称质量), 实际质量按 m<sub>k</sub> ± e<sub>k</sub> 独立正负变化。
+      校核为<b>只读</b>, 结果不保存、不覆盖原方案。服务端在误差区间内精确求最不利 |U₁|
+      (二维 zonotope 顶点枚举, 非 2<sup>n</sup> 组合枚举), 并同时给出标称 |U₁| 作对照。</div>
+    <div id="weighingMeta" class="small" style="margin:4px 0 8px"></div>
+    <div class="rowline" style="gap:10px;flex-wrap:wrap;margin-bottom:8px">
+      <div style="flex:1;min-width:200px">
+        <label>一阶不平衡量限值 |U₁| (g·mm), 留空则只计算不判定</label>
+        <input id="wcLimit" type="number" min="0" step="any" placeholder="例如 1000">
+      </div>
+      <div style="flex:1;min-width:200px">
+        <label>批量统一误差上界 (g)</label>
+        <div class="rowline">
+          <input id="wcUniform" type="number" min="0" step="any" placeholder="对全部试管填入相同 e">
+          <button id="btnWcApplyUniform" class="iconbtn">填入全部</button>
+        </div>
+      </div>
+    </div>
+    <div style="max-height:280px;overflow:auto">
+      <table class="wc-table">
+        <thead><tr><th>试管</th><th>槽位 / 角度</th><th>标称质量(g)</th>
+          <th style="width:130px">误差上界 e(g)</th>
+          <th>允许质量区间(g)</th></tr></thead>
+        <tbody id="wcTubeBody"></tbody>
+      </table>
+    </div>
+    <div class="rowline" style="margin-top:10px">
+      <button id="btnWcRun" class="primary">执行误差校核</button>
+      <span class="small">只读操作, 不会修改或覆盖历史方案。</span>
+    </div>
+    <div id="wcResult" style="margin-top:6px"></div>
+  </div>
+</div>
+
+<div id="calibDialog" class="dialog">
+  <div class="box wider">
+    <div class="rowline"><h2 style="margin:0">实测振动校准(单枚配重预测)</h2><div style="flex:1"></div>
+      <button id="btnCloseCalib" class="ghost">关闭</button></div>
+    <div class="wc-note">槽位几何(角度/启用/占用)与半径只读取自该方案, 不可修改。在<b>同一转速、同一测点与相位参考</b>下
+      填入试重前与装入试重后的振动幅值/相位、试重质量及其所在<b>空槽</b>(必须空闲启用),
+      由复数振动差 ÷ 试重质径积求影响系数 α; 再给定若干可用配重质量,
+      对方案的每个空闲启用槽位逐一预测单枚配重后的振动向量并按残余幅值排序。
+      <b>试重视为已取下</b>, 预测以试重前读数为基线; 计算<b>只读</b>, 结果不保存、不覆盖原方案。
+      两次读数几乎无变化(α 近零)时将明确拒绝推荐。</div>
+    <div id="calibMeta" class="small" style="margin:4px 0 8px"></div>
+    <h2 style="font-size:13px;margin:8px 0 6px">① 试重前后振动读数与试重</h2>
+    <div class="grid3" style="gap:10px">
+      <div><label>试重前幅值 A₀</label><input id="cbA0" type="number" min="0" step="any" placeholder="如 5.0"></div>
+      <div><label>试重前相位 φ₀ (°)</label><input id="cbP0" type="number" min="0" step="any" placeholder="0 ~ 360"></div>
+      <div></div>
+      <div><label>装试重后幅值 A₁</label><input id="cbA1" type="number" min="0" step="any" placeholder="如 6.2"></div>
+      <div><label>装试重后相位 φ₁ (°)</label><input id="cbP1" type="number" min="0" step="any" placeholder="0 ~ 360"></div>
+      <div></div>
+      <div><label>试重质量 (g)</label><input id="cbTrialMass" type="number" min="0" step="any" placeholder="如 5"></div>
+      <div><label>试重槽位(空闲启用)</label><select id="cbTrialSlot"></select></div>
+      <div></div>
+    </div>
+    <h2 style="font-size:13px;margin:12px 0 6px">② 可用配重质量(g), 逗号/空格分隔</h2>
+    <div class="rowline">
+      <input id="cbMasses" type="text" value="1, 2, 5, 10" style="flex:1"
+             placeholder="例如 1, 2, 5, 10">
+      <button id="btnCbRun" class="primary">计算影响系数并预测</button>
+    </div>
+    <div id="calibResult" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<div id="loadingDialog" class="dialog">
+  <div class="box wider">
+    <div class="rowline"><h2 style="margin:0">逐管安全装载</h2><div style="flex:1"></div>
+      <button id="btnCloseLoading" class="ghost">关闭</button></div>
+    <div class="wc-note">从<b>空转子</b>开始, 每步只装入<b>一支</b>试管, 各管最终槽位与该方案完全一致。
+      服务端按方案中的质量、槽角与半径计算各中间状态的 |U₁|, 用<b>子集动态规划</b>(2ⁿ, n≤16)
+      精确求<b>全过程峰值 |U₁| 最小</b>的装载次序; 并列最优按试管编号序列升序裁决。
+      可填写装载阶段限值, 逐步给出装入管号、槽位、当步 |U₁|、累计峰值与超限步骤。
+      超过 16 支试管将被明确拒绝。结果为<b>只读</b>, 不保存、不覆盖原方案。</div>
+    <div id="loadingMeta" class="small" style="margin:4px 0 8px"></div>
+    <div class="rowline" style="gap:10px;flex-wrap:wrap;margin-bottom:8px">
+      <div style="flex:1;min-width:220px">
+        <label>装载阶段限值 |U₁| (g·mm), 留空则只计算不判定</label>
+        <input id="ldLimit" type="number" min="0" step="any" placeholder="例如 5000">
+      </div>
+      <div style="align-self:flex-end">
+        <button id="btnLdRun" class="primary">规划装载次序</button>
+      </div>
+    </div>
+    <div id="loadingResult" style="margin-top:6px"></div>
+  </div>
+</div>
+
+<div id="evacDialog" class="dialog">
+  <div class="box wider">
+    <div class="rowline"><h2 style="margin:0">失效槽位应急迁移</h2><div style="flex:1"></div>
+      <button id="btnCloseEvac" class="ghost">关闭</button></div>
+    <div class="wc-note">基于该方案的<b>原质量、槽角与半径</b>生成只读迁移建议, 不修改试管质量,
+      结果不保存、不覆盖原方案。<b>锁定试管不得移动</b>, <b>失效槽位不得占用</b>(原本禁用槽同样不可用)。
+      服务端在最多可移动管数上限内, 按移动管数分层<b>精确枚举</b>满足限值的摆放:
+      先使<b>移动管数最少</b>, 再使最终 <b>|U₁| 最小</b>, 并列时按<b>管号升序的目标槽位序列</b>裁决。
+      仅接受至多 <b>10 支管、16 个启用槽位、移动上限 0~3</b> 的方案; 无可行摆放时会明确说明。</div>
+    <div id="evacMeta" class="small" style="margin:4px 0 8px"></div>
+    <div class="rowline" style="gap:10px;flex-wrap:wrap;margin-bottom:8px">
+      <div style="flex:1;min-width:200px">
+        <label>新失效槽位(逗号/空格分隔, 必须为原本启用槽)</label>
+        <input id="evFailed" type="text" placeholder="例如 3, 9">
+      </div>
+      <div style="flex:1;min-width:160px">
+        <label>一阶不平衡量限值 |U₁| (g·mm), 必填</label>
+        <input id="evLimit" type="number" min="0" step="any" placeholder="例如 1000">
+      </div>
+      <div style="min-width:150px">
+        <label>最多可移动管数 (0~3)</label>
+        <input id="evMaxMoves" type="number" min="0" max="3" step="1" value="3">
+      </div>
+      <div style="align-self:flex-end">
+        <button id="btnEvRun" class="primary">生成迁移建议</button>
+      </div>
+    </div>
+    <div id="evacResult" style="margin-top:6px"></div>
+  </div>
+</div>
+
+<div id="recheckDialog" class="dialog">
+  <div class="box wider">
+    <div class="rowline"><h2 style="margin:0">现场装管复核</h2><div style="flex:1"></div>
+      <button id="btnCloseRecheck" class="ghost">关闭</button></div>
+    <div class="wc-note">按<b>启用槽</b>录入现场实际有管槽位及天平实测质量(精度 <b>0.01 g</b>, 至多
+      <b>12 份</b>), 并给出<b>统一允许偏差</b>。服务端只在质量差不超过偏差的边上求方案试管与
+      实测读数的<b>一对一匹配</b>, 以<b>总绝对质量差最小</b>为准(子集动态规划精确求解);
+      对每个实测槽汇总<b>所有最优匹配</b>可能对应的试管: 唯一时按原方案槽位标为
+      <b>正确 / 错槽</b>, 多解时标为<b>身份不确定</b>(不任取一解断言错放)。
+      读数数量与方案管数不等或不存在完整匹配时会明确说明原因。
+      复核为<b>只读</b>, 结果不保存、不覆盖原方案。</div>
+    <div id="recheckMeta" class="small" style="margin:4px 0 8px"></div>
+    <div class="rowline" style="gap:10px;flex-wrap:wrap;margin-bottom:8px">
+      <div style="min-width:190px">
+        <label>统一允许偏差 e (g), 必填的非负数</label>
+        <input id="rcTol" type="number" min="0" step="0.01" placeholder="例如 0.05">
+      </div>
+      <div style="align-self:flex-end" class="rowline">
+        <button id="btnRcPrefill" class="iconbtn" title="按方案摆放填入槽位与标称质量, 再按现场实测修改">按方案预填</button>
+        <button id="btnRcAdd" class="iconbtn">+ 添加读数</button>
+      </div>
+    </div>
+    <div style="max-height:230px;overflow:auto">
+      <table class="wc-table">
+        <thead><tr><th style="width:140px">实测槽位(启用槽)</th>
+          <th style="width:150px">实测质量(g, 0.01 精度)</th>
+          <th>方案参考</th><th style="width:44px"></th></tr></thead>
+        <tbody id="rcBody"></tbody>
+      </table>
+    </div>
+    <div class="rowline" style="margin-top:10px">
+      <button id="btnRcRun" class="primary">执行装管复核</button>
+      <span class="small" id="rcCount"></span>
+      <span class="small">只读操作, 不会修改或覆盖历史方案。</span>
+    </div>
+    <div id="recheckResult" style="margin-top:6px"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
