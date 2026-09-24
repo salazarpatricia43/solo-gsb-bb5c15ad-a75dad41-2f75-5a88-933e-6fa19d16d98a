@@ -919,6 +919,159 @@ assert call("GET", f"/api/plan/{rcid}")["result"]["metrics"]["u1_mag_g_mm"] == \
 print("tube-recheck validation/read-only OK")
 
 
+# ---- 复称规划(只读, 子集分层枚举; 复用现有最不利 |U₁| 计算) ----
+def rw_call(plan_id, errs, post, limit, max_rw):
+    found = find("POST", f"/api/plan/{plan_id}/reweigh-planning")
+    fn, args = (found if isinstance(found, tuple) else (found, ()))
+    def _te(tid, e):
+        o = types.SimpleNamespace(tube_id=int(tid), mass_error_bound_g=float(e))
+        o.model_dump = lambda: {"tube_id": o.tube_id,
+                                "mass_error_bound_g": o.mass_error_bound_g}
+        return o
+    req = types.SimpleNamespace(
+        tube_errors=[_te(t, e) for t, e in errs],
+        unified_error_bound_g=float(post),
+        u1_limit_g_mm=float(limit),
+        max_reweighs=int(max_rw),
+    )
+    return fn(*args, req)
+
+# 四支全部锁定在 0/3/6/9, 各管当前误差上界相同
+rw_body = dict(req_body)
+rw_body["name"] = "复称规划方案"
+rw_body["slots"] = [{"index": i, "angle": i * 30, "enabled": True} for i in range(12)]
+rw_body["tubes"] = [
+    {"id": 1, "mass": 50, "locked": True, "slot": 0},
+    {"id": 2, "mass": 51, "locked": True, "slot": 3},
+    {"id": 3, "mass": 52, "locked": True, "slot": 6},
+    {"id": 4, "mass": 49, "locked": True, "slot": 9},
+]
+rec_rw = call("POST", "/api/plan", rw_body)
+rwid = rec_rw["id"]
+rw_errs = [(i, 1.0) for i in range(1, 5)]
+
+# 与直接调用 worst_case_u1 的全组合枚举一致
+import itertools as _itrw
+def _brute_rw(plan, errs, post, M, limit):
+    pls = plan["result"]["placements"]
+    R = plan["result"]["config"]["radius_mm"]
+    ed = dict(errs)
+    cands = sorted(t for t, e in ed.items() if e > post)
+    layers = {}
+    for k in range(0, min(M, len(cands)) + 1):
+        vals = []
+        for comb in _itrw.combinations(cands, k):
+            e2 = {t: (post if t in comb else ed[t]) for t in ed}
+            vals.append((
+                _wcu(pls, R, e2)["worst_case"]["u1_mag_g_mm"], tuple(comb)))
+        bm = min(v for v, _ in vals)
+        tied = [c for v, c in vals if v <= bm + 1e-9 * max(1.0, bm)]
+        layers[k] = (bm, min(tied), len(tied))
+    wk = next((k for k in sorted(layers)
+               if layers[k][0] <= limit + 1e-9 * max(1.0, limit)), None)
+    return layers, wk
+
+from app.weighing import worst_case_u1 as _wcu
+plan_rw = call("GET", f"/api/plan/{rwid}")
+
+# 情形 A: 限值极宽松 -> 无需复称
+rw_zero = rw_call(rwid, rw_errs, 0.1, 1.0e12, 3)
+assert rw_zero["feasible"] is True and rw_zero["reweighs_required"] == 0
+assert rw_zero["reweighed_tubes"] == []
+
+# 情形 B: 随机多组限值/统一上界/次数, 与暴力分层结果全量对照
+for post, limit, M in (
+    (0.1, 200.0, 3), (0.2, 500.0, 2), (0.05, 300.0, 1),
+    (0.5, 100.0, 0), (0.01, 0.0, 3), (0.3, 800.0, 3),
+):
+    r = rw_call(rwid, rw_errs, post, limit, M)
+    layers, wk = _brute_rw(plan_rw, rw_errs, post, M, limit)
+    for L in r["layers"]:
+        bm, bid, _ = layers[L["reweigh_count"]]
+        assert abs(L["worst_u1_g_mm"] - bm) < 1e-6 * max(1.0, bm)
+        assert tuple(L["reweighed_tubes"]) == bid
+    if wk is not None:
+        bm, bid, cnt = layers[wk]
+        assert r["feasible"] is True
+        assert r["within_limit"] is True
+        assert r["reweighs_required"] == wk
+        assert tuple(r["reweighed_tubes"]) == bid
+        assert abs(r["after"]["worst_case"]["u1_mag_g_mm"] - bm) < 1e-6 * max(1.0, bm)
+        if wk > 0:
+            assert r["optimal_combination_count"] == cnt
+        assert r["excess_g_mm"] == 0.0
+    else:
+        allbest = min(layers[k][0] for k in layers)
+        assert r["feasible"] is False
+        assert r["within_limit"] is False
+        assert abs(r["after"]["worst_case"]["u1_mag_g_mm"] - allbest) < 1e-6 * max(1.0, allbest)
+        assert r["excess_g_mm"] > max(0.0, allbest - limit) - 1e-6
+        assert "超限" in r["reason"]
+print("reweigh-planning brute-force cross-check OK")
+
+# 对称方案: k=1 四支完全等价, 平局按管号序列升序 -> (1), 共 4 种
+sym_body = dict(req_body)
+sym_body["name"] = "复称对称方案"
+sym_body["slots"] = [{"index": i, "angle": i * 30, "enabled": True} for i in range(12)]
+sym_body["tubes"] = [
+    {"id": 1, "mass": 50, "locked": True, "slot": 0},
+    {"id": 2, "mass": 50, "locked": True, "slot": 3},
+    {"id": 3, "mass": 50, "locked": True, "slot": 6},
+    {"id": 4, "mass": 50, "locked": True, "slot": 9},
+]
+sym_id = call("POST", "/api/plan", sym_body)["id"]
+sym_plan = call("GET", f"/api/plan/{sym_id}")
+# 限值取 k=1 层最优值: 恰好达标, 触发 k=1 平局裁决
+_sym_layers, _ = _brute_rw(sym_plan, [(i, 1.0) for i in range(1, 5)], 0.1, 3, 0.0)
+sym_limit = _sym_layers[1][0]
+rw_sym = rw_call(sym_id, [(i, 1.0) for i in range(1, 5)], 0.1, sym_limit, 3)
+assert rw_sym["feasible"] is True
+assert rw_sym["reweighs_required"] == 1
+assert rw_sym["reweighed_tubes"] == [1]
+assert rw_sym["optimal_combination_count"] == 4 and rw_sym["tie_broken"] is True
+print("reweigh-planning minimum-count/tie-break OK")
+
+# 复称只降误差上界: 标称质量/落槽不变, 前后标称 |U₁| 相同
+rw_one = rw_call(rwid, rw_errs, 0.1, 1.0e12, 2)
+assert abs(rw_one["before"]["nominal"]["u1_mag_g_mm"]
+           - rw_one["after"]["nominal"]["u1_mag_g_mm"]) < 1e-9
+assert abs(rw_one["before"]["nominal"]["u1_mag_g_mm"]
+           - rec_rw["result"]["metrics"]["u1_mag_g_mm"]) < 1e-6
+for t in rw_one["tubes"]:
+    slot = {1: 0, 2: 3, 3: 6, 4: 9}[t["tube_id"]]
+    assert t["slot"] == slot
+    if t["reweighed"]:
+        assert t["error_after_g"] == 0.1 and t["error_before_g"] == 1.0
+
+# 候选管: e_k <= e* 的管不进候选、不被复称
+rw_few = rw_call(rwid, [(1, 1.0), (2, 0.05), (3, 1.0), (4, 0.05)], 0.1, 1.0e12, 3)
+assert {c["tube_id"] for c in rw_few["reweigh_candidates"]} == {1, 3}
+assert not any(t["tube_id"] in (2, 4) for t in rw_few["reweighed_tubes"])
+print("reweigh-planning semantics OK")
+
+# 校验: 次数越界 / 负限值 / 未知管号 / 重复管号 -> 400; 方案不存在 -> 404
+for bad in (
+    dict(errs=rw_errs, post=0.1, limit=1.0, max_rw=4),
+    dict(errs=rw_errs, post=0.1, limit=-1.0, max_rw=3),
+    dict(errs=rw_errs, post=-0.1, limit=1.0, max_rw=3),
+    dict(errs=[(99, 1.0)], post=0.1, limit=1.0, max_rw=3),
+    dict(errs=[(1, 0.5), (1, 0.4)], post=0.1, limit=1.0, max_rw=3),
+):
+    try:
+        rw_call(rwid, bad["errs"], bad["post"], bad["limit"], bad["max_rw"])
+        raise SystemExit("should 400: " + str(bad))
+    except main.HTTPException as e:
+        assert e.status_code == 400, bad
+try:
+    rw_call(999, rw_errs, 0.1, 1.0, 3); raise SystemExit("should 404")
+except main.HTTPException as e:
+    assert e.status_code == 404
+# 只读: 规划后原方案指标不变
+assert call("GET", f"/api/plan/{rwid}")["result"]["metrics"]["u1_mag_g_mm"] == \
+    rec_rw["result"]["metrics"]["u1_mag_g_mm"]
+print("reweigh-planning validation/read-only OK")
+
+
 # ---- 互斥试管隔离(精确完全枚举; 禁用槽仍占物理相邻关系) ----
 import itertools as _itx
 

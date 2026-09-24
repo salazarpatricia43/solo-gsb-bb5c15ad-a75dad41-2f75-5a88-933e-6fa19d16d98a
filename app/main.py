@@ -22,6 +22,7 @@ from .compare import compare_plans
 from .evacuation import plan_slot_evacuation
 from .loading import plan_loading_sequence
 from .recheck import recheck_tube_loading
+from .reweigh import plan_reweigh
 from .weighing import worst_case_u1
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -152,6 +153,17 @@ class TubeRecheckRequest(BaseModel):
     readings: list[RecheckReadingIn] = Field(min_length=1, max_length=12)
     # 统一允许偏差(g), 必填的非负数; 只有质量差不超过该偏差的边上才允许匹配
     tolerance_g: float = Field(ge=0)
+
+
+class ReweighPlanningRequest(BaseModel):
+    # 各管当前质量误差上界; 未列出的试管按 0(标称质量无误差)处理
+    tube_errors: list[TubeErrorIn] = Field(default_factory=list)
+    # 复称后的统一误差上界(g): 复称某管把该管误差上界降至 min(e_k, e*)
+    unified_error_bound_g: float = Field(ge=0)
+    # 一阶不平衡量限值(g·mm), 以复称后最不利 |U₁| 判定
+    u1_limit_g_mm: float = Field(ge=0)
+    # 最多复称次数(不超过 3), 控制精确枚举的搜索规模
+    max_reweighs: int = Field(ge=0, le=3)
 
 
 class PlanRequest(BaseModel):
@@ -542,6 +554,71 @@ def tube_recheck(plan_id: int, req: TubeRecheckRequest) -> dict[str, Any]:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/plan/{plan_id}/reweigh-planning")
+def reweigh_planning(plan_id: int, req: ReweighPlanningRequest) -> dict[str, Any]:
+    """对已保存方案做复称规划(只读): 选择需要重新精确称量的试管。
+
+    录入各管当前质量误差上界、复称后的统一误差上界 e*、一阶不平衡量限值
+    L 与最多复称次数 M(≤3)。复称某管只把该管误差上界降至 min(e_k, e*),
+    标称质量与落槽不变。对每个复称组合调用现有最不利一阶不平衡量计算
+    (二维 zonotope 顶点枚举), 先找能达标的最少复称管数, 再在该管数内选
+    最不利值最低的组合(平局按管号序列升序); 次数内均无法达标时给出次数内
+    最不利值最低的组合及超限量, 不误报达标。结果不保存、不覆盖原方案。
+    """
+    row = _load_plan_row(plan_id)
+    plan = _row_to_plan(row)
+    placements = plan["result"].get("placements", [])
+    placed_ids = {
+        int(p["tube_id"]) for p in placements if p.get("slot") is not None
+    }
+
+    errors: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for item in req.tube_errors:
+        if item.tube_id in seen:
+            raise HTTPException(
+                status_code=400,
+                detail=f"试管 {item.tube_id} 的当前误差上界重复填写。",
+            )
+        seen.add(item.tube_id)
+        if item.tube_id not in placed_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=f"试管 {item.tube_id} 不在方案 {plan_id} 的摆放明细中。",
+            )
+        errors.append({
+            "tube_id": item.tube_id,
+            "mass_error_bound_g": item.mass_error_bound_g,
+        })
+
+    try:
+        out = plan_reweigh(
+            plan,
+            tube_errors=errors,
+            unified_error_bound_g=req.unified_error_bound_g,
+            u1_limit_g_mm=req.u1_limit_g_mm,
+            max_reweighs=req.max_reweighs,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # 复称前/后最不利结果补充离心力(与 weighing-check 一致)
+    rpm = float(plan["result"]["config"]["rpm"])
+    omega = 2.0 * math.pi * rpm / 60.0
+    out["rpm"] = rpm
+    out["angular_velocity_rad_s"] = omega
+    for block in (out["before"], out["after"]):
+        if block is None:
+            continue
+        block["nominal"]["centrifugal_force_n"] = (
+            omega ** 2 * block["nominal"]["u1_mag_g_mm"] * 1e-6
+        )
+        block["worst_case"]["centrifugal_force_n"] = (
+            omega ** 2 * block["worst_case"]["u1_mag_g_mm"] * 1e-6
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
