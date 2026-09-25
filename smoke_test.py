@@ -918,6 +918,94 @@ assert call("GET", f"/api/plan/{rcid}")["result"]["metrics"]["u1_mag_g_mm"] == \
     rec_rc["result"]["metrics"]["u1_mag_g_mm"]
 print("tube-recheck validation/read-only OK")
 
+# ---- 复称规划(只读, 按复称管数分层精确枚举复称组合) ----
+def rw_call(plan_id, errors, bound, limit, max_count):
+    found = find("POST", f"/api/plan/{plan_id}/reweigh-plan")
+    fn, args = (found if isinstance(found, tuple) else (found, ()))
+    req = types.SimpleNamespace(
+        tube_errors=[types.SimpleNamespace(tube_id=int(t),
+                                           mass_error_bound_g=float(e))
+                     for t, e in errors],
+        reweighed_error_bound_g=float(bound),
+        u1_limit_g_mm=float(limit),
+        max_reweigh_count=int(max_count),
+    )
+    return fn(*args, req)
+
+# 确定性方案: 四支 50g 试管锁定在槽 0/3/6/9(十字对称, 标称 |U₁|=0)
+rw_body = dict(ev_body)
+rw_body["name"] = "复称规划方案"
+rw_body["slots"] = [{"index": i, "angle": i * 30, "enabled": True}
+                    for i in range(12)]
+rw_body["tubes"] = [
+    {"id": 1, "mass": 50, "locked": True, "slot": 0},
+    {"id": 2, "mass": 50, "locked": True, "slot": 3},
+    {"id": 3, "mass": 50, "locked": True, "slot": 6},
+    {"id": 4, "mass": 50, "locked": True, "slot": 9},
+]
+rec_rw = call("POST", "/api/plan", rw_body)
+rwid = rec_rw["id"]
+assert abs(rec_rw["result"]["metrics"]["u1_mag_g_mm"]) < 1e-6
+errs4 = [(1, 1.0), (2, 1.0), (3, 1.0), (4, 1.0)]
+# 复称前已达标(限值 300 > 100·2√2 ≈ 282.84): 复称 0 支
+rw0 = rw_call(rwid, errs4, 0.1, 300.0, 3)
+assert rw0["feasible"] is True and rw0["reweigh_count"] == 0
+assert rw0["reweighed_tube_ids"] == [] and rw0["within_limit"] is True
+assert abs(rw0["baseline"]["worst_case"]["u1_mag_g_mm"]
+           - 100.0 * 2 * _math.sqrt(2)) < 1e-6
+# 限值 250: 复称 1 支即可(100·√5.21 ≈ 228.25); 四管对称并列, 取管号最小的管 1
+rw1 = rw_call(rwid, errs4, 0.1, 250.0, 3)
+assert rw1["feasible"] is True and rw1["reweigh_count"] == 1
+assert rw1["reweighed_tube_ids"] == [1] and rw1["optimal_combination_count"] == 4
+assert rw1["tie_broken"] is True
+assert abs(rw1["final"]["worst_case"]["u1_mag_g_mm"]
+           - 100.0 * _math.sqrt(5.21)) < 1e-6
+# 限值 200: 复称 2 支取垂直对 {1,2}(100·√2.42 ≈ 155.56), 而非对径对(仍超限)
+rw2 = rw_call(rwid, errs4, 0.1, 200.0, 3)
+assert rw2["feasible"] is True and rw2["reweigh_count"] == 2
+assert rw2["reweighed_tube_ids"] == [1, 2]
+assert abs(rw2["final"]["worst_case"]["u1_mag_g_mm"]
+           - 100.0 * _math.sqrt(2.42)) < 1e-6
+# 限值 150、最多复称 2 次: 无法达标, 给出次数内最优组合与超限量, 不误报达标
+rw_no = rw_call(rwid, errs4, 0.1, 150.0, 2)
+assert rw_no["feasible"] is False and rw_no["within_limit"] is False
+assert rw_no["reweigh_count"] == 2 and rw_no["reweighed_tube_ids"] == [1, 2]
+assert abs(rw_no["excess_g_mm"]
+           - (100.0 * _math.sqrt(2.42) - 150.0)) < 1e-6
+assert "不达标" in rw_no["reason"]
+# 标称值复称前后不变(标称质量与落槽不动)
+assert rw2["final"]["nominal"]["u1_mag_g_mm"] == \
+    rw2["baseline"]["nominal"]["u1_mag_g_mm"]
+# 逐管上界: 被复称管降至两者较小值, 其余不变
+rows = {t["tube_id"]: t for t in rw2["tubes"]}
+assert abs(rows[1]["error_bound_after_g"] - 0.1) < 1e-12
+assert abs(rows[3]["error_bound_after_g"] - 1.0) < 1e-12
+assert rows[1]["reweighed"] is True and rows[3]["reweighed"] is False
+print("reweigh-plan feasible/infeasible OK")
+
+# 校验错误: 上界超标称质量 / 试管不存在 / 重复填写 / 负统一上界 / 负限值 / 次数越界 -> 400
+for bad_rw in (
+    (rwid, [(1, 50.1)], 0.1, 100.0, 1),        # 误差上界超过标称质量
+    (rwid, [(99, 0.1)], 0.1, 100.0, 1),        # 试管不在方案中
+    (rwid, [(1, 0.1), (1, 0.2)], 0.1, 100.0, 1),  # 重复填写
+    (rwid, errs4, -0.1, 100.0, 1),             # 复称后统一上界为负
+    (rwid, errs4, 0.1, -1.0, 1),               # 负限值
+    (rwid, errs4, 0.1, 100.0, 4),              # 复称次数超过 3
+):
+    try:
+        rw_call(*bad_rw); raise SystemExit("should 400")
+    except main.HTTPException as e:
+        assert e.status_code == 400, (bad_rw, e)
+# 方案不存在 -> 404
+try:
+    rw_call(999, [(1, 0.1)], 0.1, 100.0, 1); raise SystemExit("should 404")
+except main.HTTPException as e:
+    assert e.status_code == 404
+# 只读: 规划后原方案指标不变
+assert call("GET", f"/api/plan/{rwid}")["result"]["metrics"]["u1_mag_g_mm"] == \
+    rec_rw["result"]["metrics"]["u1_mag_g_mm"]
+print("reweigh-plan validation/read-only OK")
+
 
 # ---- 互斥试管隔离(精确完全枚举; 禁用槽仍占物理相邻关系) ----
 import itertools as _itx

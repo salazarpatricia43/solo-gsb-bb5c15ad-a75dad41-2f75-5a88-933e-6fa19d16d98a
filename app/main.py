@@ -22,6 +22,7 @@ from .compare import compare_plans
 from .evacuation import plan_slot_evacuation
 from .loading import plan_loading_sequence
 from .recheck import recheck_tube_loading
+from .reweigh import plan_reweigh
 from .weighing import worst_case_u1
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -152,6 +153,18 @@ class TubeRecheckRequest(BaseModel):
     readings: list[RecheckReadingIn] = Field(min_length=1, max_length=12)
     # 统一允许偏差(g), 必填的非负数; 只有质量差不超过该偏差的边上才允许匹配
     tolerance_g: float = Field(ge=0)
+
+
+class ReweighPlanRequest(BaseModel):
+    # 逐管当前非负质量误差上界(g); 未列出的试管按 0(标称质量无误差)处理
+    tube_errors: list[TubeErrorIn] = Field(default_factory=list)
+    # 复称后的统一误差上界(g), 必填的非负数;
+    # 复称某管只把该管误差上界降至 min(当前上界, 该值), 标称质量与落槽不变
+    reweighed_error_bound_g: float = Field(ge=0)
+    # 一阶不平衡量限值(g·mm), 必填的非负数, 以最不利 |U₁| 判定
+    u1_limit_g_mm: float = Field(ge=0)
+    # 最多复称次数(0~3, 控制精确枚举的搜索规模)
+    max_reweigh_count: int = Field(ge=0, le=3)
 
 
 class PlanRequest(BaseModel):
@@ -539,6 +552,52 @@ def tube_recheck(plan_id: int, req: TubeRecheckRequest) -> dict[str, Any]:
             plan,
             readings=[r.model_dump() for r in req.readings],
             tolerance_g=req.tolerance_g,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/plan/{plan_id}/reweigh-plan")
+def reweigh_plan(plan_id: int, req: ReweighPlanRequest) -> dict[str, Any]:
+    """对已保存方案做复称规划(只读): 复称只降误差上界, 不动质量与落槽。
+
+    逐管录入当前称重质量误差上界(未填按 0)、复称后的统一误差上界、
+    一阶不平衡量限值与最多复称次数(0~3)。复称某管只把该管误差上界
+    降至两者较小值; 服务端按复称管数分层完全枚举复称组合(至多 24 支
+    已放置试管), 每个组合调用现有的最不利一阶不平衡量计算(二维
+    zonotope 顶点枚举), 先求能达标的最少复称管数, 再在该管数内取
+    最不利值最低的组合, 并列按管号序列升序裁决; 次数内均无法达标时
+    给出次数内最不利值最低的组合及超限量, 不误报达标。
+    结果不保存、不覆盖原方案。
+    """
+    plan = _row_to_plan(_load_plan_row(plan_id))
+    result = plan["result"]
+    placements = result.get("placements", [])
+    placed_ids = {
+        int(p["tube_id"]) for p in placements if p.get("slot") is not None
+    }
+
+    errors: dict[int, float] = {}
+    for item in req.tube_errors:
+        if item.tube_id in errors:
+            raise HTTPException(
+                status_code=400,
+                detail=f"试管 {item.tube_id} 的误差上界重复填写。",
+            )
+        if item.tube_id not in placed_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=f"试管 {item.tube_id} 不在方案 {plan_id} 的摆放明细中。",
+            )
+        errors[item.tube_id] = item.mass_error_bound_g
+
+    try:
+        return plan_reweigh(
+            plan,
+            tube_errors=errors,
+            reweighed_error_bound_g=req.reweighed_error_bound_g,
+            u1_limit_g_mm=req.u1_limit_g_mm,
+            max_reweigh_count=req.max_reweigh_count,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

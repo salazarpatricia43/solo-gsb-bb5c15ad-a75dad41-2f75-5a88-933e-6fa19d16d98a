@@ -328,12 +328,13 @@ function renderResult(record) {
   sum.innerHTML = r.summary;
   $("btnExport").disabled = false;
   $("btnCopy").disabled = false;
-  // 误差校核/振动校准/逐管装载/应急迁移/装管复核只针对已保存方案: 未保存(草稿)时禁用
+  // 误差校核/振动校准/逐管装载/应急迁移/装管复核/复称规划只针对已保存方案: 未保存(草稿)时禁用
   $("btnWeighing").disabled = !(record.id !== null && record.id !== undefined);
   $("btnCalib").disabled = !(record.id !== null && record.id !== undefined);
   $("btnLoading").disabled = !(record.id !== null && record.id !== undefined);
   $("btnEvac").disabled = !(record.id !== null && record.id !== undefined);
   $("btnRecheck").disabled = !(record.id !== null && record.id !== undefined);
+  $("btnReweigh").disabled = !(record.id !== null && record.id !== undefined);
 
   drawRotor(r);
   renderPairs(r);
@@ -603,6 +604,7 @@ async function renderHistory() {
         <button class="iconbtn" data-a="loadseq">安全装载</button>
         <button class="iconbtn" data-a="evac">应急迁移</button>
         <button class="iconbtn" data-a="recheck">装管复核</button>
+        <button class="iconbtn" data-a="reweigh">复称规划</button>
         <button class="iconbtn" data-a="export">导出</button>
         <button class="iconbtn" data-a="del">删除</button>
       </div>`;
@@ -624,6 +626,7 @@ async function renderHistory() {
     d.querySelector('[data-a="loadseq"]').onclick = () => openLoadingDialog(it.id);
     d.querySelector('[data-a="evac"]').onclick = () => openEvacDialog(it.id);
     d.querySelector('[data-a="recheck"]').onclick = () => openRecheckDialog(it.id);
+    d.querySelector('[data-a="reweigh"]').onclick = () => openReweighDialog(it.id);
     d.querySelector('[data-a="export"]').onclick = () => { window.location = `/api/plan/${it.id}/export`; };
     d.querySelector('[data-a="del"]').onclick = async () => {
       if (!confirm(`删除方案 #${it.id}?`)) return;
@@ -1685,6 +1688,214 @@ $("btnRecheck").onclick = () => {
   }
 };
 $("btnCloseRecheck").onclick = () => $("recheckDialog").classList.remove("open");
+
+// ---------------------------------------------------------------------------
+// 复称规划(只读, 基于已保存方案; 按复称管数分层精确枚举复称组合)
+// ---------------------------------------------------------------------------
+const rwState = { planId: null, rows: [] };
+
+async function openReweighDialog(id) {
+  $("btnReweigh")?.blur();
+  try {
+    const resp = await fetch(`/api/plan/${id}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || "方案读取失败");
+    rwState.planId = id;
+    rwState.rows = data.result.placements
+      .filter((p) => p.slot !== null && p.slot !== undefined)
+      .map((p) => ({
+        tube_id: p.tube_id, slot: p.slot, angle: p.angle,
+        mass: p.mass, err: 0,
+      }))
+      .sort((a, b) => a.tube_id - b.tube_id);
+    const tooMany = rwState.rows.length > 24;
+    $("reweighMeta").innerHTML =
+      `方案 <b>#${data.id} ${data.name}</b> · ${new Date(data.created_at).toLocaleString()} ·
+       R=${data.request.radius_mm}mm · ${data.result.config.rpm} rpm ·
+       ${rwState.rows.length} 支已放置试管 ·
+       标称 |U₁|=${fmt(data.result.metrics.u1_mag_g_mm)} g·mm` +
+      (tooMany ? ' · <span class="wc-hi">超过 24 支上限, 服务端将拒绝规划</span>' : "");
+    $("rwBound").value = "";
+    $("rwLimit").value = "";
+    $("rwMaxCount").value = "3";
+    $("rwUniform").value = "";
+    $("reweighResult").innerHTML = "";
+    $("btnRwRun").disabled = tooMany || rwState.rows.length === 0;
+    renderRwTubes();
+    $("reweighDialog").classList.add("open");
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+function renderRwTubes() {
+  const tb = $("rwTubeBody");
+  tb.innerHTML = "";
+  rwState.rows.forEach((r) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${r.tube_id}</td>
+      <td>${r.slot} <span class="small">(${fmt(r.angle, 1)}°)</span></td>
+      <td>${r.mass}</td>
+      <td><input type="number" min="0" max="${r.mass}" step="any" value="${r.err}"
+           data-tid="${r.tube_id}" style="width:110px"></td>
+      <td class="small" data-range="${r.tube_id}">${fmt(r.mass - r.err, 3)} ~ ${fmt(r.mass + r.err, 3)}</td>`;
+    tr.querySelector("input").oninput = (e) => {
+      let v = parseFloat(e.target.value);
+      if (isNaN(v) || v < 0) v = 0;
+      if (v > r.mass) { v = r.mass; e.target.value = v; }
+      r.err = v;
+      tr.querySelector(`[data-range="${r.tube_id}"]`).textContent =
+        `${fmt(r.mass - v, 3)} ~ ${fmt(r.mass + v, 3)}`;
+    };
+    tb.appendChild(tr);
+  });
+}
+
+$("btnRwApplyUniform").onclick = () => {
+  const v = parseFloat($("rwUniform").value);
+  if (isNaN(v) || v < 0) { toast("请输入非负的统一误差上界。", true); return; }
+  let clamped = false;
+  rwState.rows.forEach((r) => {
+    if (v > r.mass) { r.err = r.mass; clamped = true; }
+    else r.err = v;
+  });
+  renderRwTubes();
+  if (clamped) toast("部分试管误差上界已截断到其标称质量。");
+};
+
+$("btnRwRun").onclick = async () => {
+  const btn = $("btnRwRun");
+  btn.disabled = true;
+  try {
+    const bound = parseFloat($("rwBound").value);
+    if (!(bound >= 0) || !Number.isFinite(bound)) {
+      toast("复称后的统一误差上界必须为非负有限数。", true); return;
+    }
+    const limit = parseFloat($("rwLimit").value);
+    if (!(limit >= 0) || !Number.isFinite(limit)) {
+      toast("一阶不平衡量限值必须为非负有限数。", true); return;
+    }
+    const maxCount = parseInt($("rwMaxCount").value, 10);
+    if (![0, 1, 2, 3].includes(maxCount)) {
+      toast("最多复称次数必须为 0~3 的整数。", true); return;
+    }
+    const body = {
+      tube_errors: rwState.rows
+        .filter((r) => r.err > 0)
+        .map((r) => ({ tube_id: r.tube_id, mass_error_bound_g: r.err })),
+      reweighed_error_bound_g: bound,
+      u1_limit_g_mm: limit,
+      max_reweigh_count: maxCount,
+    };
+    const resp = await fetch(`/api/plan/${rwState.planId}/reweigh-plan`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || "复称规划失败");
+    renderReweighResult(data);
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+function renderReweighResult(d) {
+  const box = $("reweighResult");
+  const baseW = d.baseline.worst_case.u1_mag_g_mm;
+  const finalW = d.final.worst_case.u1_mag_g_mm;
+  const ids = d.reweighed_tube_ids;
+  const idsTxt = ids.length ? `管号 <b>${ids.join("、")}</b>` : "无";
+
+  let verdict;
+  if (d.feasible && d.reweigh_count === 0) {
+    verdict = `<div class="wc-ok">✔ <b>达标, 无需复称</b>: 复称前最不利 |U₁|=${fmt(baseW)} g·mm
+      已不超过限值 ${fmt(d.u1_limit_g_mm)} g·mm, 余量 ${fmt(d.margin_g_mm)} g·mm。</div>`;
+  } else if (d.feasible) {
+    verdict = `<div class="wc-ok">✔ <b>达标</b>: 复称 <b>${d.reweigh_count}</b> 支试管(${idsTxt})后,
+      最不利 |U₁|=${fmt(finalW)} g·mm ≤ 限值 ${fmt(d.u1_limit_g_mm)} g·mm,
+      余量 ${fmt(d.margin_g_mm)} g·mm(复称前 ${fmt(baseW)} g·mm, 下降 ${fmt(d.improvement_g_mm)})。
+      这是能达标的<b>最少复称管数</b>${d.tie_broken
+        ? `; 达到该最优结果的组合共 <b>${d.optimal_combination_count}</b> 种, 已按管号序列升序裁决`
+        : ", 且该管数下最优组合唯一"}。</div>`;
+  } else {
+    verdict = `<div class="wc-bad">✘ <b>无法达标</b>: 在最多复称 ${d.max_reweigh_count} 次的限制内,
+      没有使最不利 |U₁| ≤ 限值 ${fmt(d.u1_limit_g_mm)} g·mm 的复称组合。
+      次数内最不利值最低的组合为复称 <b>${d.reweigh_count}</b> 支(${idsTxt}),
+      复称后最不利 |U₁|=${fmt(finalW)} g·mm, 仍<b>超出 ${fmt(d.excess_g_mm)} g·mm</b>
+      (复称前 ${fmt(baseW)} g·mm)。</div>`;
+  }
+
+  const head = `<div class="wc-note">复称后统一误差上界 ±${fmt(d.reweighed_error_bound_g, 3)} g ·
+    最多复称 ${d.max_reweigh_count} 次 · 有效候选(复称后上界确实下降)
+    ${d.candidate_tube_ids.length} 支${d.candidate_tube_ids.length
+      ? `: ${d.candidate_tube_ids.map((t) => `管 ${t}`).join("、")}` : ""} ·
+    精确评估复称组合 ${d.evaluated_combinations} 种 · 转子 R=${fmt(d.radius_mm, 1)} mm。</div>`;
+
+  const cmpTable = `<table class="cmp-table">
+    <thead><tr><th>指标</th><th style="text-align:right">复称前</th>
+      <th style="text-align:right">复称后(推荐组合)</th><th style="text-align:right">变化</th></tr></thead>
+    <tbody>
+      <tr><td>最不利 |U₁| (g·mm)</td>
+        <td style="text-align:right">${fmt(baseW)}</td>
+        <td style="text-align:right" class="wc-hi">${fmt(finalW)}</td>
+        <td style="text-align:right" class="${d.improvement_g_mm > 1e-12 ? "delta-down" : "delta-flat"}">
+          ${d.improvement_g_mm > 1e-12 ? "−" + fmt(d.improvement_g_mm) : "0"}</td></tr>
+      <tr><td>标称 |U₁| (g·mm)</td>
+        <td style="text-align:right">${fmt(d.baseline.nominal.u1_mag_g_mm)}</td>
+        <td style="text-align:right">${fmt(d.final.nominal.u1_mag_g_mm)}</td>
+        <td style="text-align:right" class="small">不变(标称质量与落槽不动)</td></tr>
+      <tr><td>限值 ${fmt(d.u1_limit_g_mm)} g·mm 判定</td>
+        <td style="text-align:right">${d.baseline.within_limit
+          ? '<span class="delta-down">合格</span>'
+          : `<span class="delta-up">超限 ${fmt(d.baseline.excess_g_mm)}</span>`}</td>
+        <td style="text-align:right">${d.within_limit
+          ? '<span class="delta-down">合格</span>'
+          : `<span class="delta-up">超限 ${fmt(d.excess_g_mm)}</span>`}</td>
+        <td style="text-align:right">–</td></tr>
+    </tbody></table>`;
+
+  const rows = d.tubes.map((t) => {
+    const status = t.reweighed
+      ? '<span class="status-tag st-added">复称</span>'
+      : t.candidate
+        ? '<span class="status-tag st-unchanged">不复称</span>'
+        : '<span class="small">上界不降</span>';
+    return `<tr${t.reweighed ? ' style="background:#10331f55"' : ""}>
+      <td>${t.tube_id}</td>
+      <td>${t.slot} <span class="small">(${fmt(t.angle_deg, 1)}°)</span></td>
+      <td>${fmt(t.nominal_mass_g, 3)}</td>
+      <td>±${fmt(t.error_bound_before_g, 3)}</td>
+      <td><b>±${fmt(t.error_bound_after_g, 3)}</b></td>
+      <td>${status}</td>
+    </tr>`;
+  }).join("");
+
+  box.innerHTML = `
+    ${verdict}
+    ${head}
+    ${cmpTable}
+    <h2 style="font-size:13px;margin:10px 0 6px">逐管误差上界变化(推荐组合)
+      <span class="small">复称只把该管上界降至两者较小值; 标称质量与落槽不变</span></h2>
+    <table class="cmp-table wc-table">
+      <thead><tr><th>试管</th><th>槽位/角度</th><th>标称质量(g)</th>
+        <th>当前上界(g)</th><th>复称后上界(g)</th><th>是否复称</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="small" style="margin-top:6px">算法: ${d.method}。${d.note}
+      方案 #${d.plan.id} 未被修改。</div>`;
+}
+
+$("btnReweigh").onclick = () => {
+  if (state.record && state.record.id !== null && state.record.id !== undefined) {
+    openReweighDialog(state.record.id);
+  } else {
+    toast("请先从历史方案载入一条已保存方案, 或先计算并保存方案。", true);
+  }
+};
+$("btnCloseReweigh").onclick = () => $("reweighDialog").classList.remove("open");
 
 // ---------------------------------------------------------------------------
 // 标签页 & 初始化

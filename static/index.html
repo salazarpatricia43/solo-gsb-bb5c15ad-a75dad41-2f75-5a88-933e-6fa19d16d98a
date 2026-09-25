@@ -226,6 +226,7 @@ th{color:var(--mut);font-weight:500}
       <button id="btnLoading" disabled title="对已保存方案规划逐管安全装载次序(只读, 子集动态规划)">逐管安全装载</button>
       <button id="btnEvac" disabled title="对已保存方案做失效槽位应急迁移(只读, 精确枚举)">失效槽位应急迁移</button>
       <button id="btnRecheck" disabled title="对已保存方案做现场装管复核(只读, 一对一匹配)">现场装管复核</button>
+      <button id="btnReweigh" disabled title="对已保存方案做复称规划(只读, 精确枚举复称组合)">复称规划</button>
       <button id="btnExport" disabled>导出 JSON</button>
       <button id="btnCopy" disabled>复制 JSON</button>
     </div>
@@ -482,6 +483,56 @@ th{color:var(--mut);font-weight:500}
       <span class="small">只读操作, 不会修改或覆盖历史方案。</span>
     </div>
     <div id="recheckResult" style="margin-top:6px"></div>
+  </div>
+</div>
+
+<div id="reweighDialog" class="dialog">
+  <div class="box wider">
+    <div class="rowline"><h2 style="margin:0">复称规划</h2><div style="flex:1"></div>
+      <button id="btnCloseReweigh" class="ghost">关闭</button></div>
+    <div class="wc-note">固定读取该方案的落槽与角度, 不可修改。逐管填写<b>当前</b>称重质量误差上界
+      (0 ≤ e<sub>k</sub> ≤ 标称质量; 未填按 0), 再给出<b>复称后的统一误差上界</b>、
+      <b>一阶不平衡量限值</b>与<b>最多复称次数</b>(0~3)。复称某管只把该管误差上界降至
+      <b>两者较小值</b>, 标称质量与落槽不变。服务端按复称管数分层<b>精确枚举</b>复称组合
+      (至多 24 支已放置试管), 每个组合调用现有最不利 |U₁| 计算(二维 zonotope 顶点枚举):
+      先求能达标的<b>最少复称管数</b>, 再在该管数内取<b>最不利值最低</b>的组合,
+      并列按<b>管号序列升序</b>裁决; 次数内均无法达标时给出最不利值最低的组合与超限量,
+      <b>不误报达标</b>。规划为<b>只读</b>, 结果不保存、不覆盖原方案。</div>
+    <div id="reweighMeta" class="small" style="margin:4px 0 8px"></div>
+    <div class="rowline" style="gap:10px;flex-wrap:wrap;margin-bottom:8px">
+      <div style="flex:1;min-width:170px">
+        <label>复称后统一误差上界 (g), 必填的非负数</label>
+        <input id="rwBound" type="number" min="0" step="any" placeholder="例如 0.05">
+      </div>
+      <div style="flex:1;min-width:170px">
+        <label>一阶不平衡量限值 |U₁| (g·mm), 必填</label>
+        <input id="rwLimit" type="number" min="0" step="any" placeholder="例如 1000">
+      </div>
+      <div style="min-width:140px">
+        <label>最多复称次数 (0~3)</label>
+        <input id="rwMaxCount" type="number" min="0" max="3" step="1" value="3">
+      </div>
+      <div style="flex:1;min-width:190px">
+        <label>批量统一当前误差上界 (g)</label>
+        <div class="rowline">
+          <input id="rwUniform" type="number" min="0" step="any" placeholder="对全部试管填入相同 e">
+          <button id="btnRwApplyUniform" class="iconbtn">填入全部</button>
+        </div>
+      </div>
+    </div>
+    <div style="max-height:230px;overflow:auto">
+      <table class="wc-table">
+        <thead><tr><th>试管</th><th>槽位 / 角度</th><th>标称质量(g)</th>
+          <th style="width:130px">当前误差上界 e(g)</th>
+          <th>当前允许质量区间(g)</th></tr></thead>
+        <tbody id="rwTubeBody"></tbody>
+      </table>
+    </div>
+    <div class="rowline" style="margin-top:10px">
+      <button id="btnRwRun" class="primary">规划复称方案</button>
+      <span class="small">只读操作, 不会修改或覆盖历史方案。</span>
+    </div>
+    <div id="reweighResult" style="margin-top:6px"></div>
   </div>
 </div>
 
